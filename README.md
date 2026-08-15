@@ -1,0 +1,1 @@
+# traducao_snes
