@@ -51,9 +51,13 @@ def parse_tbl_text(text: str) -> dict:
     Suporta multi-byte (ex.: 8140=A) e comentários iniciados por '//' ou '#'.
     """
     mapping = {}
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("//") or line.startswith("#"):
+    for raw_line in text.splitlines():
+        # remove só a quebra de linha (\r\n) — NÃO usar strip() aqui, pois
+        # entradas legítimas como "FF= " (espaço) têm o valor significativo
+        # à direita do "=", e strip() apagaria justamente esse espaço.
+        line = raw_line.rstrip("\r\n")
+        stripped_for_check = line.strip()
+        if not stripped_for_check or stripped_for_check.startswith(("//", "#")):
             continue
         if "=" not in line:
             continue

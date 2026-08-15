@@ -388,17 +388,31 @@ if rom_safe_to_continue and st.session_state["table_result"]:
     min_conf = colB.slider("Confiança mínima do bloco", 0.0, 1.0, 0.35, 0.05)
     scan_full = colC.checkbox("Escanear ROM inteira (mais lento)", value=True)
 
-    if st.button("🔍 Escanear ROM"):
+    term_input = st.text_input(
+        "Byte(s) terminador(es) de string, em hex separados por vírgula",
+        value="00",
+        help="Padrão é 0x00, mas NEM TODO jogo usa isso — confira se sua tabela .tbl "
+             "define algum byte como fim de string antes de confiar no padrão. Se sua "
+             "tabela não define terminador (comum em jogos com DTE/MTE), prefira a "
+             "segmentação por ponteiros abaixo, que não depende de terminador nenhum."
+    )
+    try:
+        custom_terminators = {int(t.strip(), 16) for t in term_input.split(",") if t.strip()}
+    except ValueError:
+        st.error("Terminadores inválidos — use hex separado por vírgula, ex: 00,FF")
+        custom_terminators = {0x00}
+
+    if st.button("🔍 Escanear ROM (varredura cega por terminador)"):
         tr = st.session_state["table_result"]
         with st.spinner("Procurando blocos de texto..."):
             scan_end = len(info.rom) if scan_full else min(len(info.rom), 0x80000)
             blocks = text_scan.find_text_blocks(
-                info.rom, tr.byte_to_char, min_len=min_len, min_confidence=min_conf,
-                scan_end=scan_end,
+                info.rom, tr.byte_to_char, terminators=custom_terminators,
+                min_len=min_len, min_confidence=min_conf, scan_end=scan_end,
             )
             blocks = text_scan.merge_overlapping(blocks)
         st.session_state["text_blocks"] = blocks
-        log(f"{len(blocks)} blocos de texto candidatos encontrados.")
+        log(f"{len(blocks)} blocos de texto candidatos encontrados (varredura cega).")
 
         with st.spinner("Procurando tabelas de ponteiros..."):
             cands = pointers.find_pointer_candidates(info.rom, blocks, info.best_mapping.mapping)
@@ -418,9 +432,29 @@ if rom_safe_to_continue and st.session_state["table_result"]:
                 st.warning("Nenhuma tabela de ponteiros de 16 bits identificada com segurança. "
                            "Blocos que precisarem crescer além do espaço original NÃO poderão ser "
                            "realocados automaticamente — só editados para caber no espaço original.")
-            for c in cands:
-                st.write(f"- offset 0x{c.table_offset:06X}, {c.entry_count} entradas, "
-                         f"confiança {c.confidence:.0%}, blocos associados: {len(c.matched_block_indices)}")
+            for i, c in enumerate(cands):
+                col1, col2 = st.columns([4, 1])
+                col1.write(f"- offset 0x{c.table_offset:06X}, {c.entry_count} entradas, "
+                           f"confiança {c.confidence:.0%}, blocos associados: {len(c.matched_block_indices)}")
+                if col2.button("Usar p/ segmentar", key=f"reseg_16_{i}"):
+                    targets = sorted({blocks[idx].start for idx in c.matched_block_indices
+                                       if idx < len(blocks)})
+                    with st.spinner("Re-segmentando blocos usando esta tabela de ponteiros..."):
+                        new_blocks = text_scan.segment_blocks_by_pointers(
+                            info.rom, st.session_state["table_result"].byte_to_char,
+                            pointer_targets=targets, terminators=custom_terminators,
+                        )
+                    st.session_state["text_blocks"] = new_blocks
+                    log(f"Re-segmentado por ponteiros: {len(new_blocks)} blocos "
+                        f"(a partir da tabela em 0x{c.table_offset:06X}).")
+                    st.rerun()
+
+            st.info("💡 **Se os textos acima aparecem 'colados' ou com pedaços de mais de um "
+                    "diálogo misturados**, isso geralmente significa que o terminador configurado "
+                    "está errado para este jogo (comum em jogos com tabela DTE/MTE, que cobre quase "
+                    "todo o espaço de bytes). Clique em **'Usar p/ segmentar'** numa tabela de "
+                    "ponteiros acima — isso re-segmenta os blocos usando os próprios ponteiros como "
+                    "limite de cada string, sem depender de adivinhar o terminador.")
 
             if st.button("🔎 Também buscar ponteiros de 24 bits e indiretos"):
                 with st.spinner("Buscando ponteiros de 24 bits..."):
@@ -437,9 +471,20 @@ if rom_safe_to_continue and st.session_state["table_result"]:
             if cands24:
                 st.write("**Ponteiros de 24 bits (banco explícito) — mais específicos, geralmente "
                          "mais confiáveis que os de 16 bits:**")
-                for c in cands24:
-                    st.write(f"- offset 0x{c.table_offset:06X}, {c.entry_count} entradas, "
-                             f"confiança {c.confidence:.0%}")
+                for i, c in enumerate(cands24):
+                    col1, col2 = st.columns([4, 1])
+                    col1.write(f"- offset 0x{c.table_offset:06X}, {c.entry_count} entradas, "
+                               f"confiança {c.confidence:.0%}")
+                    if col2.button("Usar p/ segmentar", key=f"reseg_24_{i}"):
+                        targets = sorted({blocks[idx].start for idx in c.matched_block_indices
+                                           if idx < len(blocks)})
+                        new_blocks = text_scan.segment_blocks_by_pointers(
+                            info.rom, st.session_state["table_result"].byte_to_char,
+                            pointer_targets=targets, terminators=custom_terminators,
+                        )
+                        st.session_state["text_blocks"] = new_blocks
+                        log(f"Re-segmentado por ponteiros de 24 bits: {len(new_blocks)} blocos.")
+                        st.rerun()
             if cands_indirect:
                 st.write("**Ponteiros indiretos (tabela aponta para outra tabela de ponteiros):**")
                 for c in cands_indirect[:10]:

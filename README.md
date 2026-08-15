@@ -68,6 +68,28 @@ barra lateral do app, fica salva só na sessão do navegador).
   jogos específicos (compressão, ponteiros de 24 bits, tabela fixa etc.)
   sem alterar o pipeline genérico.
 
+## Jogos com DTE/MTE (tabela de dicionário, ex.: Final Fantasy Mystic Quest)
+
+Alguns jogos usam tabelas onde um único byte representa uma palavra inteira
+ou fragmento ("you", "the", "ing"), cobrindo quase todo o espaço de bytes.
+Isso quebra duas premissas de uma varredura ingênua:
+
+1. **Quase qualquer sequência de bytes decodifica como "algo parecido com
+   texto"** — mesmo dado binário não-textual (tabela de ponteiros, gráfico).
+   Por isso a pontuação de confiança usa sinais linguísticos (formato de
+   palavra, densidade de vogais, densidade de espaço) além de "byte
+   resolvido pela tabela".
+2. **Muitos desses jogos não usam `0x00` como terminador de string** —
+   confira se sua tabela `.tbl` realmente define um terminador antes de
+   confiar no padrão. Se não define (ou os textos aparecem "colados" uns
+   nos outros na varredura), use o botão **"Usar p/ segmentar"** ao lado de
+   qualquer tabela de ponteiros detectada, na Etapa 4 — isso re-segmenta os
+   blocos usando os próprios ponteiros como limite de cada string, sem
+   precisar adivinhar terminador nenhum.
+
+Você também pode configurar terminadores customizados (em hex, separados
+por vírgula) diretamente na Etapa 4.
+
 ## Sobre usar IA para os três problemas difíceis
 
 - **Tabela de caracteres sem pista**: a IA ajuda de verdade via visão
