@@ -18,10 +18,24 @@ from __future__ import annotations
 import io
 import json
 import time
+import sys
 import hashlib
+from pathlib import Path
+
 import streamlit as st
 
-from core import rom_io, tbl, text_scan, pointers, ips_patch, translator, relocation, profiles
+# Garante que a pasta deste script (e portanto o pacote `core/` dentro dela)
+# esteja no sys.path, independentemente do diretório de trabalho com que o
+# Streamlit foi iniciado. Em alguns ambientes de deploy (ex.: Streamlit
+# Community Cloud com uv + Python 3.14) o cwd do processo não é
+# necessariamente a pasta do script, o que quebra imports relativos ao
+# projeto como `from core import ...`.
+APP_DIR = Path(__file__).resolve().parent
+if str(APP_DIR) not in sys.path:
+    sys.path.insert(0, str(APP_DIR))
+
+from core import (rom_io, tbl, text_scan, pointers, ips_patch, translator, relocation,
+                  profiles, compression, web_intel, font_vision)
 
 st.set_page_config(page_title="SNES ROM Translator PT-BR", layout="wide")
 
@@ -175,7 +189,8 @@ if rom_safe_to_continue:
 
     tbl_method = st.radio(
         "Método",
-        ["Importar arquivo .tbl", "Busca relativa (palavra conhecida)", "Hipótese ASCII direta"],
+        ["Importar arquivo .tbl", "Busca relativa (palavra conhecida)", "Hipótese ASCII direta",
+         "🎨 Detectar fonte via IA (visão computacional)", "🌐 Buscar documentação/TBL conhecida na web"],
         horizontal=False,
     )
 
@@ -224,6 +239,87 @@ if rom_safe_to_continue:
                 st.success("Tabela parcial definida (apenas alfabeto/números/espaço). "
                             "Você pode complementar importando um .tbl depois.")
 
+    elif tbl_method == "🎨 Detectar fonte via IA (visão computacional)":
+        st.caption("Extrai tiles gráficos da ROM e usa o Gemini para *ler visualmente* a fonte "
+                   "do jogo — funciona mesmo sem nenhuma pista textual, mas SEMPRE precisa da "
+                   "sua confirmação antes de virar tabela.")
+        if st.button("1) Escanear candidatos a região de fonte"):
+            with st.spinner("Procurando regiões de tiles com aparência de glifos..."):
+                cands = font_vision.scan_font_candidates(info.rom)
+            st.session_state["_font_candidates"] = cands
+            log(f"{len(cands)} candidato(s) de região de fonte encontrados.")
+
+        cands = st.session_state.get("_font_candidates", [])
+        if cands:
+            options = [f"offset 0x{c.offset:06X}, {c.bpp}bpp, confiança {c.confidence:.0%} "
+                       f"(densidade de tinta média {c.avg_ink_ratio:.0%})" for c in cands]
+            choice = st.selectbox("Candidato de região de fonte", options)
+            chosen = cands[options.index(choice)]
+            if st.button("2) Renderizar tileset para conferência visual"):
+                img, cols, rows = font_vision.render_tileset_image(
+                    info.rom, chosen.offset, chosen.bpp, tile_count=128, cols=16
+                )
+                st.session_state["_font_image"] = img
+                st.session_state["_font_grid"] = (cols, rows, chosen.offset, chosen.bpp)
+            if "_font_image" in st.session_state:
+                st.image(st.session_state["_font_image"],
+                          caption="Confira visualmente se isto parece uma fonte de texto antes de continuar.")
+                if st.button("3) Rodar OCR com Gemini nesta imagem",
+                              disabled=not st.session_state["gemini_api_key"]):
+                    cols, rows, off, bpp = st.session_state["_font_grid"]
+                    with st.spinner("Gemini lendo os glifos..."):
+                        try:
+                            mappings = font_vision.run_font_ocr(
+                                st.session_state["_font_image"], cols, rows,
+                                st.session_state["gemini_api_key"], st.session_state["gemini_model"],
+                            )
+                            st.session_state["_font_ocr_result"] = mappings
+                            log(f"OCR de fonte retornou {len(mappings)} mapeamentos propostos.")
+                        except Exception as e:  # noqa: BLE001
+                            st.error(f"Erro no OCR: {e}")
+
+        ocr_result = st.session_state.get("_font_ocr_result")
+        if ocr_result:
+            st.write(f"**{len(ocr_result)} caracteres propostos pela IA — revise antes de aceitar:**")
+            tile_size = 16 if st.session_state["_font_grid"][3] == 2 else 32
+            base_offset = st.session_state["_font_grid"][2]
+            edited_rows = []
+            for m in ocr_result[:200]:
+                edited_rows.append({
+                    "tile_index": m.get("tile_index"),
+                    "byte": f"0x{(base_offset + m.get('tile_index', 0) * tile_size) & 0xFF:02X} (aprox.)",
+                    "caractere_proposto": m.get("character"),
+                    "confiança_ia": m.get("confidence"),
+                })
+            st.dataframe(edited_rows, use_container_width=True, height=300)
+            st.warning("Nota técnica: o índice do tile precisa ser mapeado para o BYTE real usado "
+                       "no texto do jogo (que pode não ser sequencial ao tile) — confirme manualmente "
+                       "antes de aceitar esta tabela, ou combine com busca relativa para validar.")
+
+    elif tbl_method == "🌐 Buscar documentação/TBL conhecida na web":
+        st.caption("Busca se este jogo já tem tabela/patch/documentação publicados pela comunidade "
+                   "(romhacking.net e web em geral) — encontrar trabalho já feito é sempre melhor "
+                   "que redescobrir do zero.")
+        game_title = info.best_mapping.title if info.best_mapping else ""
+        search_title = st.text_input("Título para buscar", value=game_title)
+        if st.button("Buscar na web"):
+            with st.spinner("Buscando..."):
+                results = web_intel.search_known_game_resources(search_title)
+            if results.get("erro"):
+                st.error(results["erro"])
+            else:
+                for categoria, label in [("patches", "Patches de tradução existentes"),
+                                          ("tbl", "Tabelas .tbl / documentação de caracteres"),
+                                          ("tecnico", "Notas técnicas (ponteiros/compressão)")]:
+                    items = results.get(categoria, [])
+                    if items:
+                        st.subheader(label)
+                        for r in items:
+                            st.markdown(f"**[{r.title}]({r.url})**  \n{r.snippet}")
+                if not any(results.get(c) for c in ("patches", "tbl", "tecnico")):
+                    st.info("Nenhum resultado relevante encontrado — este jogo provavelmente "
+                            "não tem documentação pública de ROM hacking.")
+
     else:  # Hipótese ASCII direta
         conf = tbl.score_ascii_hypothesis(info.rom)
         color = "🟢" if conf >= 0.6 else ("🟡" if conf >= 0.35 else "🔴")
@@ -252,7 +348,40 @@ if rom_safe_to_continue:
 # ETAPA 3 — detecção de blocos de texto e ponteiros
 # --------------------------------------------------------------------------
 if rom_safe_to_continue and st.session_state["table_result"]:
-    st.header("3️⃣ Detecção de blocos de texto e ponteiros")
+    st.header("3️⃣ Detecção de compressão")
+    st.caption("Verifica se há regiões comprimidas na ROM antes de procurar texto — texto "
+               "comprimido não aparece como texto legível numa varredura direta.")
+    if st.button("🗜️ Escanear regiões possivelmente comprimidas"):
+        with st.spinner("Calculando entropia por blocos..."):
+            fingerprints = compression.scan_for_compressed_regions(info.rom, block_size=512, stride=1024)
+        st.session_state["_compressed_regions"] = fingerprints
+        log(f"{len(fingerprints)} região(ões) com indícios de compressão encontradas.")
+
+    fingerprints = st.session_state.get("_compressed_regions", [])
+    if fingerprints:
+        st.warning(f"{len(fingerprints)} região(ões) com entropia típica de dado comprimido. "
+                   "Texto dentro dessas regiões NÃO aparecerá na varredura de texto normal — "
+                   "veja abaixo se algum esquema conhecido consegue reverter algum trecho.")
+        sample = fingerprints[:5]
+        for fp in sample:
+            with st.expander(f"Região em 0x{fp.offset:06X} ({fp.reason})"):
+                if st.button(f"Tentar reverter (RLE/LZSS genérico)", key=f"decomp_{fp.offset}"):
+                    with st.spinner("Testando esquemas conhecidos..."):
+                        matches = compression.try_all_schemes(info.rom, fp.offset, search_window=1024)
+                    consistent = [m for m in matches if m.self_consistent]
+                    if consistent:
+                        best = consistent[0]
+                        st.success(f"✅ {best.scheme} — {best.notes}")
+                        st.code(best.decompressed[:300])
+                    else:
+                        st.error("Nenhum esquema conhecido (RLE simples, LZSS genérico) reverteu "
+                                "esta região com segurança. Provavelmente usa compressão "
+                                "proprietária — precisa de um perfil de jogo dedicado "
+                                "(core/profiles.py) feito via engenharia reversa manual.")
+    else:
+        st.caption("Nenhuma varredura executada ainda, ou nenhuma região suspeita encontrada.")
+
+    st.header("4️⃣ Detecção de blocos de texto e ponteiros")
 
     colA, colB, colC = st.columns(3)
     min_len = colA.number_input("Comprimento mínimo do bloco", 2, 100, 4)
@@ -293,6 +422,30 @@ if rom_safe_to_continue and st.session_state["table_result"]:
                 st.write(f"- offset 0x{c.table_offset:06X}, {c.entry_count} entradas, "
                          f"confiança {c.confidence:.0%}, blocos associados: {len(c.matched_block_indices)}")
 
+            if st.button("🔎 Também buscar ponteiros de 24 bits e indiretos"):
+                with st.spinner("Buscando ponteiros de 24 bits..."):
+                    cands24 = pointers.find_24bit_pointer_candidates(info.rom, blocks, info.best_mapping.mapping)
+                with st.spinner("Buscando ponteiros indiretos (nível 2)..."):
+                    cands_indirect = pointers.find_indirect_pointer_candidates(
+                        info.rom, cands24 or cands, info.best_mapping.mapping)
+                st.session_state["pointer_candidates_24"] = cands24
+                st.session_state["pointer_candidates_indirect"] = cands_indirect
+                log(f"{len(cands24)} candidatos de 24 bits, {len(cands_indirect)} indiretos encontrados.")
+
+            cands24 = st.session_state.get("pointer_candidates_24", [])
+            cands_indirect = st.session_state.get("pointer_candidates_indirect", [])
+            if cands24:
+                st.write("**Ponteiros de 24 bits (banco explícito) — mais específicos, geralmente "
+                         "mais confiáveis que os de 16 bits:**")
+                for c in cands24:
+                    st.write(f"- offset 0x{c.table_offset:06X}, {c.entry_count} entradas, "
+                             f"confiança {c.confidence:.0%}")
+            if cands_indirect:
+                st.write("**Ponteiros indiretos (tabela aponta para outra tabela de ponteiros):**")
+                for c in cands_indirect[:10]:
+                    st.write(f"- offset 0x{c.table_offset:06X}, confiança {c.confidence:.0%} "
+                             f"(indireção reduz a certeza — confirme manualmente)")
+
         st.subheader("Blocos detectados")
         low_conf_count = sum(1 for b in blocks if b.confidence < CONFIDENCE_WARN)
         if low_conf_count:
@@ -316,7 +469,7 @@ if rom_safe_to_continue and st.session_state["table_result"]:
 # ETAPA 4 — seleção, tradução e revisão manual
 # --------------------------------------------------------------------------
 if st.session_state["text_blocks"]:
-    st.header("4️⃣ Tradução (Gemini) e revisão manual")
+    st.header("5️⃣ Tradução (Gemini) e revisão manual")
 
     blocks = st.session_state["text_blocks"]
     min_select_conf = st.slider("Traduzir apenas blocos com confiança mínima de", 0.0, 1.0, CONFIDENCE_SAFE, 0.05,
@@ -402,7 +555,7 @@ if st.session_state["text_blocks"]:
 # ETAPA 5 — aplicação, validação e geração do IPS
 # --------------------------------------------------------------------------
 if st.session_state["translations"]:
-    st.header("5️⃣ Aplicar tradução, validar e gerar patch IPS")
+    st.header("6️⃣ Aplicar tradução, validar e gerar patch IPS")
 
     header_option = st.radio(
         "O patch IPS deve ser gerado para aplicação em uma ROM:",
