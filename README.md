@@ -68,6 +68,44 @@ barra lateral do app, fica salva só na sessão do navegador).
   jogos específicos (compressão, ponteiros de 24 bits, tabela fixa etc.)
   sem alterar o pipeline genérico.
 
+## Continuar de onde parou (salvar/carregar progresso)
+
+O Streamlit perde todo o estado quando a aba fecha ou o servidor reinicia. Na
+barra lateral, em **💾 Progresso**, você pode:
+
+- **Local (.json)**: baixar um arquivo com tudo (tabela, blocos, traduções) e
+  reenviá-lo depois — sempre funciona, não depende de nada externo. Você
+  reenvia a ROM original na sessão seguinte para continuar.
+- **GitHub**: salvar/carregar num arquivo de um repositório seu (recomendado
+  **privado**), via Personal Access Token com escopo de escrita de conteúdo.
+  Isso sobrevive a redeploys do Streamlit Community Cloud (cujo disco é
+  efêmero), diferente do arquivo local no servidor.
+
+Você também pode marcar **"🔒 Lembrar esta chave neste servidor"** para a
+chave do Gemini e/ou as configurações do GitHub — grava num arquivo local
+(`core` fora, na raiz do projeto) em texto puro. **Só habilite isso se o app
+for privado e só seu**; se salvar o token do GitHub, use um repositório
+privado para o progresso.
+
+## Uso econômico da IA
+
+Duas etapas usam o Gemini de forma deliberadamente econômica, não "manda tudo
+de uma vez":
+
+- **Classificação de blocos (ruído vs. texto real)**: processa em lotes
+  pequenos e **retomáveis** (você controla quantos blocos por clique), com um
+  **pré-filtro heurístico gratuito** que descarta de graça os blocos
+  estatisticamente óbvios antes de gastar qualquer chamada de IA. Em
+  varreduras cegas com milhares de blocos (comum em jogos com DTE), prefira
+  segmentar por tabela de ponteiros primeiro — isso costuma reduzir a
+  centenas ou dezenas de blocos, tornando a classificação por IA rápida e
+  barata (ou desnecessária).
+- **OCR de fonte via visão computacional**: se você já tem uma TBL
+  confirmada, ela rotula a maior parte dos tiles **de graça** (hipótese
+  índice-do-tile = valor-do-byte), valida essa hipótese com uma amostra
+  pequena (uma chamada), e só manda para OCR completo os tiles que a TBL não
+  explica — normalmente uma fração pequena do total.
+
 ## Jogos com DTE/MTE (tabela de dicionário, ex.: Final Fantasy Mystic Quest)
 
 Alguns jogos usam tabelas onde um único byte representa uma palavra inteira
@@ -89,6 +127,18 @@ Isso quebra duas premissas de uma varredura ingênua:
 
 Você também pode configurar terminadores customizados (em hex, separados
 por vírgula) diretamente na Etapa 4.
+
+## Gráficos comprimidos (fonte aparece como ruído visual)
+
+Se o tileset renderizado na detecção de fonte por IA parecer ruído puro
+(alto contraste aleatório, sem forma de letra nenhuma), o motivo mais comum
+é que os **gráficos estão comprimidos** nessa região — a maioria dos jogos
+de SNES comprime gráficos, e um decodificador de tile cru não consegue
+interpretar dado comprimido como bitmap. Use o checkbox **"🗜️ Tentar
+descomprimir esta região antes de renderizar"** (reaproveita a mesma
+biblioteca de descompressão validada por round-trip usada para texto) — se
+não funcionar, o esquema é provavelmente proprietário e precisa de um perfil
+de jogo dedicado.
 
 ## Sobre usar IA para os três problemas difíceis
 
