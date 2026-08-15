@@ -35,7 +35,7 @@ if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
 
 from core import (rom_io, tbl, text_scan, pointers, ips_patch, translator, relocation,
-                  profiles, compression, web_intel, font_vision)
+                  profiles, compression, web_intel, font_vision, block_classifier)
 
 st.set_page_config(page_title="SNES ROM Translator PT-BR", layout="wide")
 
@@ -423,6 +423,51 @@ if rom_safe_to_continue and st.session_state["table_result"]:
     cands = st.session_state["pointer_candidates"]
 
     if blocks:
+        st.subheader("🤖 Refinar candidatos com IA")
+        st.caption("Heurística estatística (proporção de vogais, formato de palavra) tem teto — "
+                   "ela não sabe inglês, só conta padrão. A IA *lê* cada trecho de verdade e julga "
+                   "se faz sentido como texto de jogo ou é ruído/dado binário mal decodificado. "
+                   "Isto só classifica e prioriza — nunca aplica nada sozinho.")
+        ai_context = st.text_input("Contexto do jogo (opcional, ajuda a IA a julgar)",
+                                    value=(info.best_mapping.title if info.best_mapping else ""),
+                                    key="ai_classify_context")
+        col_ai1, col_ai2 = st.columns([1, 3])
+        with col_ai1:
+            run_ai_classify = st.button("🤖 Classificar blocos com IA",
+                                         disabled=not st.session_state["gemini_api_key"])
+        if not st.session_state["gemini_api_key"]:
+            col_ai2.warning("Informe a chave do Gemini na barra lateral para habilitar.")
+
+        if run_ai_classify:
+            with st.spinner(f"IA analisando {len(blocks)} blocos em lotes..."):
+                try:
+                    progress = st.progress(0.0, text="Classificando...")
+                    batch = 30
+                    for start in range(0, len(blocks), batch):
+                        block_classifier.classify_blocks_with_ai(
+                            blocks[start:start + batch], st.session_state["gemini_api_key"],
+                            st.session_state["gemini_model"], game_context=ai_context, batch_size=batch,
+                        )
+                        progress.progress(min((start + batch) / len(blocks), 1.0))
+                    st.session_state["text_blocks"] = blocks
+                    n_real = sum(1 for b in blocks if b.ai_verdict == "texto_real")
+                    n_ruido = sum(1 for b in blocks if b.ai_verdict == "ruido")
+                    log(f"IA classificou {len(blocks)} blocos: {n_real} texto real, {n_ruido} ruído.")
+                    st.success(f"✅ {n_real} blocos classificados como texto real, "
+                               f"{n_ruido} como ruído (de {len(blocks)} avaliados).")
+                except Exception as e:  # noqa: BLE001
+                    st.error(f"Erro na classificação: {e}")
+
+        if any(b.ai_verdict is not None for b in blocks):
+            only_real = st.checkbox(
+                "Mostrar só os blocos que a IA considera texto real "
+                "(a lista abaixo só exibe esses — os índices continuam intactos "
+                "para tradução e aplicação)",
+                value=True,
+            )
+        else:
+            only_real = False
+
         avg_conf = sum(b.confidence for b in blocks) / len(blocks)
         st.success(f"{len(blocks)} blocos encontrados — confiança média {avg_conf:.0%}. "
                     f"{len(cands)} possíveis tabelas de ponteiros associadas.")
@@ -499,14 +544,19 @@ if rom_safe_to_continue and st.session_state["table_result"]:
 
         preview_rows = []
         for i, b in enumerate(blocks[:500]):
+            if only_real and b.ai_verdict == "ruido":
+                continue
             preview_rows.append({
                 "idx": i, "offset": f"0x{b.start:06X}", "tamanho": len(b.raw),
                 "confiança": f"{b.confidence:.0%}", "categoria": b.category_hint,
+                "IA": b.ai_verdict or "não avaliado",
+                "conf. IA": f"{b.ai_confidence:.0%}" if b.ai_confidence is not None else "—",
                 "texto": b.text[:120],
             })
         st.dataframe(preview_rows, use_container_width=True, height=350)
         if len(blocks) > 500:
-            st.caption(f"Mostrando os primeiros 500 de {len(blocks)} blocos.")
+            st.caption(f"Mostrando os primeiros 500 de {len(blocks)} blocos "
+                       f"(idx corresponde à posição real na lista — usado nas etapas seguintes).")
     else:
         st.info("Clique em 'Escanear ROM' para localizar os textos.")
 
@@ -519,8 +569,16 @@ if st.session_state["text_blocks"]:
     blocks = st.session_state["text_blocks"]
     min_select_conf = st.slider("Traduzir apenas blocos com confiança mínima de", 0.0, 1.0, CONFIDENCE_SAFE, 0.05,
                                  key="select_conf")
-    selected_indices = [i for i, b in enumerate(blocks) if b.confidence >= min_select_conf]
-    st.write(f"**{len(selected_indices)}** blocos selecionados para tradução automática.")
+    exclude_ai_noise = st.checkbox(
+        "Excluir automaticamente blocos que a IA classificou como ruído (recomendado)",
+        value=True,
+    )
+    selected_indices = [
+        i for i, b in enumerate(blocks)
+        if b.confidence >= min_select_conf and not (exclude_ai_noise and b.ai_verdict == "ruido")
+    ]
+    st.write(f"**{len(selected_indices)}** blocos selecionados para tradução automática "
+             f"(de {len(blocks)} candidatos totais).")
 
     game_context = st.text_input("Contexto do jogo (opcional, ajuda a IA)",
                                   placeholder="Ex.: RPG de fantasia medieval, tom sério...")

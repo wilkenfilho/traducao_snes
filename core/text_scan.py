@@ -49,6 +49,9 @@ class TextBlock:
     confidence: float
     terminated_cleanly: bool
     category_hint: str = "desconhecido"
+    ai_verdict: str | None = None       # None | "texto_real" | "ruido"
+    ai_confidence: float | None = None
+    ai_reason: str = ""
 
 
 def _looks_like_padding(raw: bytes) -> bool:
