@@ -54,7 +54,7 @@ class TranslationGlossary:
 
 
 class GeminiTranslator:
-    def __init__(self, api_key: str, model_name: str = "gemini-2.0-flash"):
+    def __init__(self, api_key: str, model_name: str = "gemini-flash-latest"):
         if not api_key:
             raise ValueError("Chave de API do Gemini não fornecida.")
         import google.generativeai as genai

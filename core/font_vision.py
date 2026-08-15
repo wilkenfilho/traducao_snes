@@ -215,7 +215,7 @@ Responda SOMENTE em JSON: {{"mappings": [{{"tile_index": N, "character": "X", \
 """
 
 
-def run_font_ocr(image, cols: int, rows: int, api_key: str, model_name: str = "gemini-2.0-flash") -> list[dict]:
+def run_font_ocr(image, cols: int, rows: int, api_key: str, model_name: str = "gemini-flash-latest") -> list[dict]:
     """
     Modo "gastador": pede ao modelo pra ler TODOS os tiles da grade de uma vez.
     Use `run_font_ocr_economical()` sempre que já existir uma TBL confirmada —

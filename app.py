@@ -66,9 +66,15 @@ def _write_local_config(data: dict) -> None:
 # --------------------------------------------------------------------------
 def _init_state():
     local_cfg = _read_local_config()
+    saved_model = local_cfg.get("gemini_model", "gemini-flash-latest")
+    if saved_model in ("gemini-2.0-flash", "gemini-1.5-flash", "gemini-pro"):
+        # migração automática: modelos antigos foram descontinuados pela Google:
+        # https://ai.google.dev/gemini-api/docs/changelog — usa o alias que se
+        # autoatualiza em vez de reintroduzir um modelo que já quebrou.
+        saved_model = "gemini-flash-latest"
     defaults = {
         "gemini_api_key": local_cfg.get("gemini_api_key", ""),
-        "gemini_model": local_cfg.get("gemini_model", "gemini-2.0-flash"),
+        "gemini_model": saved_model,
         "github_token": local_cfg.get("github_token", ""),
         "github_owner": local_cfg.get("github_owner", ""),
         "github_repo": local_cfg.get("github_repo", ""),
@@ -127,7 +133,10 @@ def _restore_session_from_data(data: dict) -> None:
         ) for c in d.get("pointer_candidates", [])
     ]
     if d.get("gemini_model"):
-        st.session_state["gemini_model"] = d["gemini_model"]
+        restored_model = d["gemini_model"]
+        if restored_model in ("gemini-2.0-flash", "gemini-1.5-flash", "gemini-pro"):
+            restored_model = "gemini-flash-latest"
+        st.session_state["gemini_model"] = restored_model
     log(f"Progresso restaurado: {len(st.session_state['text_blocks'])} blocos, "
         f"{len(st.session_state['translations'])} traduções, filename original: {d.get('filename')}.")
 
@@ -145,7 +154,11 @@ with st.sidebar:
     st.session_state["gemini_api_key"] = api_key_input
     st.session_state["gemini_model"] = st.text_input(
         "Modelo Gemini", value=st.session_state["gemini_model"],
-        help="Ex.: gemini-2.0-flash. Ajuste se a Google renomear o modelo."
+        help="Padrão: 'gemini-flash-latest' — alias que a Google aponta automaticamente pro "
+             "Flash mais recente, então não quebra quando um modelo específico é aposentado. "
+             "Se quiser fixar uma versão exata (mais previsível, mas quebra quando descontinuada), "
+             "use algo como 'gemini-3.6-flash'. Se aparecer erro 404 de modelo indisponível, "
+             "troque aqui pelo modelo atual (confira em ai.google.dev/gemini-api/docs/models)."
     )
     remember_key = st.checkbox(
         "🔒 Lembrar esta chave neste servidor (arquivo local)",

@@ -56,7 +56,7 @@ Mesma ordem e mesma quantidade de itens recebidos.
 def classify_blocks_with_ai(
     blocks: list,
     api_key: str,
-    model_name: str = "gemini-2.0-flash",
+    model_name: str = "gemini-flash-latest",
     game_context: str = "",
     batch_size: int = 30,
     max_retries: int = 3,
